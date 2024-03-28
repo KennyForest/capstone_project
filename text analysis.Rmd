@@ -1,0 +1,323 @@
+---
+title: "Text analysis"
+output: html_document
+date: "2024-03-25"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(quanteda)
+library(quanteda.textstats)
+library(quanteda.textplots)
+library(quanteda.sentiment)
+library(stringr)
+library(stm)
+library(lubridate)
+library(tidyverse)
+library(ggplot2)
+library(dplyr)
+library(reshape2)
+library(patchwork)
+```
+
+## Data Loading and Preprocessing
+Load the data, which include the combined blog articles of the four organisations.
+```{r}
+articles <- read.csv("article_text.csv")
+articles$Organisation <- as.factor(articles$Organisation)
+
+# Creating a day of the year column
+articles$Date <- dmy(articles$Date)
+articles$day_of_year <- yday(articles$Date)
+
+summary(articles)
+head(articles)
+```
+
+Preprocess the text data.
+```{r}
+# Original articles text
+texts <- articles$Text
+
+# Removing lengthy disclaimers from Rainbow Migration directly from the text
+disclaimer_pattern <- "Disclaimer The content of this website is provided for general information only and should not be relied on as legal advice. Rainbow Migration disclaims any liability resulting from reliance on such information. You are strongly advised to seek professional legal advice from a qualified immigration solicitor.  hello@rainbowmigration.org.uk020 7922 78117-14 Great Dover St,London SE1 4YR © 2024 Rainbow Migration. All rights reserved"
+
+# Use str_remove_all to remove patterns from each text
+cleaned_texts <- str_remove_all(texts, disclaimer_pattern)
+
+# Create corpus from cleaned texts, set 3 docvariables associated with each article/document
+corp <- corpus(cleaned_texts,
+               docvars = data.frame(organisation = articles$Organisation,
+                                    title = articles$Title,
+                                    date = articles$Date,
+                                    day_of_year = articles$day_of_year))
+
+# create the dfm
+dfm_ungrouped <- corp %>% 
+  tokens(remove_punct = TRUE, remove_numbers = TRUE, remove_symbols = TRUE,
+         remove_url = TRUE) %>%
+  tokens_remove(stopwords("en")) %>%
+  tokens_wordstem() %>%
+  tokens_ngrams(n = 1:2) %>%
+  dfm() %>%
+  dfm_trim(min_termfreq = 5)
+
+# group the dfm for descriptive analysis
+dfm_grouped <- dfm_group(dfm_ungrouped, groups = articles$Organisation)
+
+# Inspect the ungrouped and grouped dfm
+topfeatures(dfm_grouped, n = 50)
+dfm_grouped
+topfeatures(dfm_ungrouped, n = 50)
+dfm_ungrouped
+```
+
+## Descriptive analysis
+Create a grouped wordcloud to visualise the most frequent words used by each organisation, so to have a brief picture of the frequently used words by each organisation in their blog articles.
+```{r, warning=FALSE}
+textplot_wordcloud((dfm_grouped), 
+                   comparison = TRUE, 
+                   groups = articles$Organisation,
+                   min_count = 10,
+                   max_words = 320,
+                   color = c("red", "blue", "purple", "green"))
+```
+
+Structural topic modelling (STM) is a method that combines topic modelling and regression analysis to identify topics and their relationship with metadata. In this case, we will use STM to identify the topics in the blog articles and their relationship with the organisation that published them.
+```{r}
+# convert the quanteda object into a stm input
+stm_input <- convert(dfm_ungrouped, to = "stm")
+# quantitative diagnostics
+k_search_output <- searchK(stm_input$documents, stm_input$vocab,
+                           K = c(5, 6, 7, 8, 9), data = stm_input$meta,
+                           verbose = FALSE, heldout.seed = 123)
+plot(k_search_output)
+k_search_output
+```
+
+K = 8 seems to be the sweet spot with the highest held-out likelihood, suggesting good model fit.
+K = 8 also has improved semantic coherence compared to K = 5, 6, and 7, indicating that the topics are meaningful.
+Although K = 9 has slightly better residuals and a higher lower bound, the semantic coherence drops, which might indicate that the topics at K = 9 are less interpretable.
+
+Given these diagnostics, K = 8 appears to be the most suitable number of topics because it provides the best balance across the various measures. It has good predictive accuracy (held-out likelihood), a good balance of topic interpretability (semantic coherence), and a reasonable model fit (residuals and lower bound), without the drop in coherence observed at K = 9.
+
+```{r}
+stmodel <- stm(documents = stm_input$documents, vocab = stm_input$vocab,
+                     K = 8, prevalence =~ organisation + s(day_of_year),
+               data = stm_input$meta, verbose = FALSE, init.type = "LDA", seed = 123) # initialise the structural topic model with LDA as it works better in this scenario
+plot(stmodel)
+```
+```{r}
+# plot wordclouds for a detailed examination of each topic, so to label topics
+
+cloud(stmodel, topic = 1, scale = c(2, .25)) # Refugee Safety and Essential Support
+cloud(stmodel, topic = 2, scale = c(2, .25)) # Organisation's Progress and Opportunities
+cloud(stmodel, topic = 3, scale = c(2, .25)) # Organisational Leadership for Migrant Support
+cloud(stmodel, topic = 4, scale = c(2, .25)) # Diversity and Historical Acknowledgment
+cloud(stmodel, topic = 5, scale = c(2, .25)) # Migrant Data and Legal Status
+cloud(stmodel, topic = 6, scale = c(2, .25)) # Migrants' Right-to-Work
+cloud(stmodel, topic = 7, scale = c(2, .25)) # Women's Experiences in Asylum Seeking
+cloud(stmodel, topic = 8, scale = c(2, .25)) # LGBTQI+ Experiences in Asylum Seeking and Detention
+
+```
+Plot to see which topics are most prevalent in each organisation's blog articles.
+```{r}
+# estimate the effect of organisation and day_of_year on topic prevalence
+effect_estimates <- estimateEffect(1:8 ~ organisation + s(day_of_year), stmodel, meta = stm_input$meta)
+
+# Get document-topic probabilities directly from the model
+topic_probabilities <- as.data.frame(stmodel$theta) # theta matrix contains the document-topic probabilities
+
+# Prepare the data by adding document identifiers and melting to long format
+topic_probabilities$document <- rownames(topic_probabilities)
+doc_topic_org <- tidyr::pivot_longer(topic_probabilities, -document, names_to = "topic", values_to = "prob")
+
+# labels for the topics
+topic_labels <- c("Refugee Safety and Essential Support", "Organisation's Progress and Opportunities", "Organisational Leadership for Migrant Support", "Diversity and Historical Acknowledgment", "Migrant Data and Legal Status", "Migrants' Right-to-Work", "Women's Experiences in Asylum Seeking", "LGBTQI+ Experiences in Asylum Seeking and Detention")
+
+# Convert the topic number to a factor with levels corresponding to the numbers and labels as the topic labels
+doc_topic_org$topic <- factor(doc_topic_org$topic, levels = paste("V", 1:8, sep=""), labels = topic_labels)
+
+# Add a document identifier to the metadata
+stm_input$meta$document <- seq_len(nrow(stm_input$meta))
+
+# Merge with metadata to include organisation information
+doc_topic_org <- merge(doc_topic_org, stm_input$meta, by = "document")
+
+# Corrected aggregation step
+topic_prevalence_by_org <- aggregate(prob ~ topic + organisation, data = doc_topic_org, mean)
+
+# Plot aggregated topic prevalences for each organisation
+ggplot(topic_prevalence_by_org, aes(x = reorder(topic, -prob), y = prob, fill = organisation)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  theme_minimal() +
+  labs(x = "Topic", y = "Average Topic Prevalence", title = "Topic Prevalence by Organisation") +
+  coord_flip() +
+  scale_x_discrete(labels = function(x) str_wrap(x, width = 10))
+```
+
+Plot the discussion of topics over the specified timeframe.
+```{r}
+# Set up the plotting area to have 2 rows and 4 columns
+par(mfrow=c(2,4))
+
+# Number of topics
+n_topics <- length(topic_labels)
+
+# Initialise a list to store plots
+plot_list <- vector("list", n_topics)
+
+# Create a plot for each topic
+for (i in 1:n_topics) {
+  plot_list[[i]] <- plot(effect_estimates, "day_of_year", method = "continuous", topics = i,
+                         model = stmodel, printlegend = FALSE, xaxt = "n", xlab = "2022-2023",
+                         main = topic_labels[i])
+  
+  # Assuming you have a sequence of dates for the x-axis (as in your example)
+  monthseq <- seq(from = as.Date("2022-12-01"), to = as.Date("2023-12-31"), by = "month")
+  monthnames <- months(monthseq)
+  axis(1, at = as.numeric(monthseq) - min(as.numeric(monthseq)), labels = monthnames, las=2) # `las=2` makes labels perpendicular
+}
+
+```
+
+## Sentiment Analysis
+```{r}
+data(data_dictionary_NRC)
+# weight the grouped dfm in proportion
+dfm_grouped_weighted <- dfm_weight(dfm_grouped, scheme = "prop")
+# apply the NRC dictionary to the weighted dfm
+emotions <- dfm_lookup(dfm_grouped_weighted, dictionary = data_dictionary_NRC)
+emotions
+
+# Assuming emotions is your dfm after applying the NRC dictionary
+# First, create a subset for negative and positive sentiments
+neg_pos <- emotions[, c("negative", "positive")]
+
+# Normalize so that each row sums to 1
+neg_pos <- neg_pos / rowSums(neg_pos)
+
+# Do the same for the other eight emotions
+other_emotions <- emotions[, c("anger", "anticipation", "disgust", "fear", "joy", "sadness", "surprise", "trust")]
+
+# Normalize these as well
+other_emotions <- other_emotions / rowSums(other_emotions)
+
+# Combine the two normalized sets back into one dfm
+normalised_emotions <- cbind(neg_pos, other_emotions)
+normalised_emotions
+```
+```{r}
+# Convert DFM to matrix
+emotions_matrix <- as.matrix(normalised_emotions)
+
+# Melt the matrix into a long data frame
+emotions_long <- melt(emotions_matrix, value.name = "sentiment_score")
+
+# Correctly match the organization names to the emotions_long data frame
+# Get the number of rows for each document (number of features per doc)
+rows_per_doc <- nfeat(emotions)
+
+# Repeat the organization names according to the number of features per document
+emotions_long$organisation <- rep(docvars(emotions, "organisation"), times = rows_per_doc)
+
+# Since we're using melt, which doesn't assign column names for document and feature, let's add them
+colnames(emotions_long)[1:2] <- c("document", "feature")
+
+# Filter for only negative and positive emotions
+emotions_neg_pos <- emotions_long %>%
+  filter(feature %in% c("negative", "positive"))
+
+# Plot negative vs positive sentiments by organisation
+ggplot(emotions_neg_pos, aes(x = organisation, y = sentiment_score, fill = feature)) +
+  geom_bar(stat = "identity", position = "stack") +
+  labs(x = "Organisation", y = "Sentiment Score", title = "Negative vs Positive Sentiment by Organisation") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+```
+
+```{r}
+# Filter out negative and positive emotions to focus on the other emotions
+emotions_others <- emotions_long %>%
+  filter(!feature %in% c("negative", "positive"))
+
+# Plot all other emotions by organisation
+ggplot(emotions_others, aes(x = organisation, y = sentiment_score, fill = feature)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(x = "Organisation", y = "Sentiment Score", title = "Other Emotions by Organisation") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  theme(legend.position = "bottom")  # Adjust legend position for readability
+```
+
+```{r}
+# Weight the ungrouped DFM by count
+dfm_ungrouped_weighted <- dfm_weight(dfm_ungrouped, scheme = "count")
+
+# Convert DFM to a matrix, then to a data frame
+emotion_matrix <- as.matrix(text_emotions)
+emotion_df <- as.data.frame(emotion_matrix)
+
+emotion_df
+
+# Ensure document identifiers are properly set as row names in the DFM
+row.names(emotion_df) <- docnames(text_emotions)
+
+# Convert row names to a column for document identifiers
+emotion_df$document <- row.names(emotion_df)
+
+# Now, pivot only the sentiment score columns to long format
+emotion_long <- pivot_longer(emotion_df, 
+                             cols = -document, 
+                             names_to = "emotion", 
+                             values_to = "sentiment_score")
+
+# Merge with metadata
+doc_metadata <- data.frame(
+  document = docnames(dfm_ungrouped),
+  organisation = docvars(dfm_ungrouped, "organisation"),
+  date = as.Date(docvars(dfm_ungrouped, "date"), format = "%Y-%m-%d")
+)
+
+emotion_long <- left_join(emotion_long, doc_metadata, by = "document")
+
+# Ensure date is correctly formatted
+# emotion_long$date <- as.Date(emotion_long$date)
+
+# Specify the exact organization names
+organisations <- c("Freedom from Torture", "Migrants' Rights Network", 
+                   "Rainbow Migration", "Women for Refugee Women")
+
+# Initialize an empty list for storing plots
+plot_list <- list()
+
+# Iterate over organizations to create plots
+for (org in organisations) {
+  # Filter data for the current organization
+  filtered_data <- emotion_long %>%
+    filter(organisation == org) %>%
+    filter(emotion %in% c("joy", "trust", "fear", "surprise", "anger", "anticipation", "disgust", "sadness"))
+
+  # Create plot for current organization
+  p <- ggplot(filtered_data, aes(x = date, y = sentiment_score, color = emotion)) +
+    geom_line() +
+    labs(title = paste("Sentiment Over Time for", org),
+         x = "Date", y = "Sentiment Score") +
+    scale_color_viridis_d() +
+    theme_minimal() +
+    theme(legend.position = "bottom", legend.title = element_blank()) +
+    scale_x_date(date_labels = "%b %Y", date_breaks = "1 month")
+
+  # Add the plot to the list
+  plot_list[[org]] <- p
+}
+
+# Combine the plots using patchwork
+combined_plot <- wrap_plots(plot_list, ncol = 2)
+
+# Print the combined plot
+print(combined_plot)
+
+```
