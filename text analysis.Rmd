@@ -24,6 +24,7 @@ library(patchwork)
 library(data.table)
 library(word2vec)
 library(textTinyR)
+library(reshape2)
 ```
 
 ## Data Loading and Preprocessing
@@ -48,7 +49,7 @@ disclaimer_pattern <- disclaimer_pattern <- "Disclaimer.*?All rights reserved|Sh
 # Use str_remove_all to remove patterns from each text
 cleaned_texts <- str_remove_all(texts, disclaimer_pattern)
 
-# Create corpus from cleaned texts, set 4 docvariables associated with each article/document
+# Create corpus from cleaned texts, set 4 docvariables associated with each document
 corp <- corpus(cleaned_texts,
                docvars = data.frame(organisation = articles$Organisation,
                                     title = articles$Title,
@@ -67,16 +68,26 @@ dfm <- corp %>%
 
 topfeatures(dfm, n = 50)
 
-# total number of documents and tokens
-ndoc(dfm)
-sum(dfm)
+ndoc(dfm) # total number of documents
+sum(dfm) # total number of tokens
+nfeat(dfm) # total number of types/features
 
 # plot the wordcloud
 textplot_wordcloud(dfm, min_count = 10, max_words = 150, rotation = 0)
 
+# calculate tf-idf scores for each feature
+dfm_tfidf <- dfm_tfidf(dfm)
+# print the top 10 words for each candidate
+top_features <- topfeatures(dfm_tfidf, 10)
+
+top_features_table <- data.frame(term = names(top_features), tfidf = top_features, row.names = NULL)
+
+# Print the table
+print(top_features_table)
+
 ```
 ## Structural Topic Modelling
-Based on the diagnostic plots, selecting a number of topics around 20-25 appears optimal as it balances model fit improvements (as indicated by a steadily increasing lower bound) with maintaining semantic coherence (which remains relatively stable across different K values). This range maximizes the interpretability of the topics without significant risk of overfitting, as evidenced by the modest but consistent improvements in model fit and low variability in residuals.
+Based on the diagnostic plots, selecting k = 15 appears optimal, as it captures a balance between maximising Held-Out Likelihood and maintaining acceptable Semantic Coherence. At this point, the likelihood indicates an efficient model fit without overfitting, evidenced by a notable peak in likelihood and acceptable coherence levels. Additionally, k = 15 shows diminishing returns in model improvement beyond this point, as evidenced by the steep decline in Semantic Coherence and minimal gains in the Lower Bound for higher values of KKK. This choice ensures a robust model that interprets distinct topics with substantial coherence and relevance.
 ```{r}
 # Convert the quanteda object into a stm input
 stm_input <- convert(dfm, to = "stm")
@@ -226,11 +237,12 @@ word2vec_model <- word2vec(x = word_list, type = "skip-gram", dim = 100, window 
 
 embedding_matrix <- as.matrix(word2vec_model)
 head(embedding_matrix[,1:10])
+
 # Predict the nearest words to a given word
 predict(word2vec_model, newdata = c("rwanda"), type = "nearest", top_n = 5)
 ```
 
-Apply the dictionary, calculate the sentiment and emotion scores, and normalize the scores.
+Apply the dictionary as comparison, calculate the sentiment and emotion scores, and normalize the scores.
 ```{r}
 # Calculate the sentiment scores based on the NRC lexicon
 dfm_weighted <- dfm_weight(dfm, scheme = "prop")
@@ -252,6 +264,7 @@ colnames(normalized_scores_df) <- c("happy", "sad", "angry", "fear", "surprise",
 # View the normalized scores
 print(normalized_scores_df)
 ```
+
 ```{r}
 # Convert DFM to a matrix, then to a data frame
 emotion_matrix <- as.matrix(dfm_sentiments)
@@ -309,14 +322,14 @@ plot_sentiments <- ggplot(sentiment_data, aes(x = date, y = normalized_score, co
   theme(legend.position = "bottom", legend.title = element_blank()) +
   scale_x_date(date_labels = "%b %Y", date_breaks = "1 month")
 
-# Combine the plots using patchwork
+# Combine the plots
 combined_plot <- plot_emotions + plot_sentiments + plot_layout(ncol = 1)
 
 # Print the combined plot
 print(combined_plot)
 ```
 
-Incorporate the word embeddings in the sentiment analysis.
+Incorporate the word embeddings into sentiment analysis.
 ```{r}
 # Extract the vocabulary from the word2vec model
 vocabulary_summary <- summary(word2vec_model, type = "vocabulary")
@@ -408,7 +421,7 @@ names(normalized_scores) <- names(corpus_sentiment_scores)  # Ensure names are c
 print("Normalized Corpus-Wide Sentiment and Emotion Scores:")
 print(normalized_scores)
 ```
-Visualise the sentiment and emotion scores.
+Visualise the sentiment and emotion scores for the overall corpus.
 ```{r}
 # Create a data frame for the scores
 scores_df <- data.frame(
@@ -424,12 +437,12 @@ print(scores_df)
 # Generate the faceted bar chart with labels
 ggplot(scores_df, aes(x = Category, y = Score, fill = Category)) +
   geom_bar(stat = "identity") +
-  geom_text(aes(label = sprintf("%.2f", Score)), position = position_stack(vjust = 0.5), color = "white") +  # Adjust 'vjust' for label positioning
+  geom_text(aes(label = sprintf("%.2f", Score)), position = position_stack(vjust = 0.5), color = "white") + 
   facet_wrap(~ Type, scales = "free_x") +
   theme_minimal() +
-  labs(title = "Normalized Sentiment and Emotion Scores",
+  labs(title = "Normalised Sentiment and Emotion Scores",
        x = "Category",
-       y = "Normalized Score") +
+       y = "Normalised Score") +
   theme(axis.text.x = element_text(angle = 45, hjust = 1),
         legend.position = "bottom") +
   scale_fill_manual(values = c("positive" = "#00AFBB", "negative" = "#FC4E07",
@@ -451,7 +464,7 @@ document_sentiment_scores <- lapply(document_embeddings, function(doc_embedding)
 scores_df <- do.call(rbind, document_sentiment_scores)
 colnames(scores_df) <- names(sentiment_vectors)  # Ensure column names are set from sentiment vector names
 
-# Convert scores_df from matrix to dataframe for dplyr operations
+# Convert scores_df from matrix to dataframe
 scores_df <- as.data.frame(scores_df)
 
 # Normalize sentiment and emotion scores within each document
@@ -465,7 +478,7 @@ scores_df <- scores_df %>%
     across(c("joy", "sadness", "anger", "fear", "surprise", "disgust", "trust", "anticipation"), ~ ./total_emotion)
   )
 
-# Assuming 'dfm$date' is correctly formatted and corresponds to each document
+# Add document date to the scores dataframe
 scores_df$date <- as.Date(dfm$date, format = "%d-%b-%y")
 
 scores_long <- pivot_longer(scores_df, cols = -date, names_to = "category", values_to = "score")
@@ -503,7 +516,7 @@ emotions <- normalized_daily_scores %>%
 # Plotting sentiments
 p1 <- ggplot(sentiments, aes(x = date, y = normalized_score, color = category)) +
   geom_line() +
-  labs(title = "Normalized Daily Sentiment Scores", y = "Normalized Score", x = "Date") +
+  labs(title = "Normalised Daily Sentiment Scores", y = "Normalised Score", x = "Date") +
   theme_minimal() +
   theme(legend.position = "bottom", legend.title = element_blank()) +
   scale_x_date(date_labels = "%b %Y", date_breaks = "1 month")
@@ -511,7 +524,7 @@ p1 <- ggplot(sentiments, aes(x = date, y = normalized_score, color = category)) 
 # Plotting emotions
 p2 <- ggplot(emotions, aes(x = date, y = normalized_score, color = category)) +
   geom_line() +
-  labs(title = "Normalized Daily Emotion Scores", y = "Normalized Score", x = "Date") +
+  labs(title = "Normalised Daily Emotion Scores", y = "Normalised Score", x = "Date") +
   theme_minimal() +
   theme(legend.position = "bottom", legend.title = element_blank()) +
   scale_x_date(date_labels = "%b %Y", date_breaks = "1 month")
@@ -522,7 +535,6 @@ print(combined_plot)
 ```
 
 ```{r}
-# Assuming 'daily_scores' contains the necessary score data and dates
 # Ensure dates are in the correct format
 daily_scores$date <- as.Date(daily_scores$date, format = "%d-%b-%y")
 
