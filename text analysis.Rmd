@@ -24,7 +24,6 @@ library(patchwork)
 library(data.table)
 library(word2vec)
 library(textTinyR)
-library(plotly)
 ```
 
 ## Data Loading and Preprocessing
@@ -135,7 +134,7 @@ average_probabilities <- doc_topic_long %>%
   summarize(AverageProb = mean(prob), .groups = 'drop')
 
 # Convert topic to a factor with explicit levels
-# average_probabilities$topic <- factor(average_probabilities$topic, levels = paste("Topic", 1:15))
+average_probabilities$topic <- factor(average_probabilities$topic, levels = paste0("V", 1:15))
 
 # Create simple labels for the pie slices with just topic numbers and proportions
 average_probabilities <- average_probabilities %>%
@@ -212,6 +211,8 @@ for (i in 1:length(topic_labels)) {
 Train the word2vec model:
 ```{r}
 # Train the word2vec model on my corpus
+set.seed(123)
+
 tokens <- corp %>% 
   tokens(remove_punct = TRUE, remove_numbers = TRUE, remove_symbols = TRUE,
          remove_url = TRUE) %>%
@@ -221,8 +222,6 @@ tokens <- corp %>%
 # Unlist the tokens to create a single vector of words for word2vec
 word_list <- unlist(tokens)
 # Train the model
-set.seed(123)
-
 word2vec_model <- word2vec(x = word_list, type = "skip-gram", dim = 100, window = 10, min_count = 5, iter = 20)
 
 embedding_matrix <- as.matrix(word2vec_model)
@@ -252,6 +251,69 @@ colnames(normalized_scores_df) <- c("happy", "sad", "angry", "fear", "surprise",
 
 # View the normalized scores
 print(normalized_scores_df)
+```
+```{r}
+# Convert DFM to a matrix, then to a data frame
+emotion_matrix <- as.matrix(dfm_sentiments)
+emotion_df <- as.data.frame(emotion_matrix)
+row.names(emotion_df) <- docnames(dfm_sentiments)
+emotion_df$document <- row.names(emotion_df)
+
+# Convert row names to a column for document identifiers
+emotion_long <- pivot_longer(emotion_df, cols = -document, names_to = "emotion", values_to = "sentiment_score")
+
+# Merge with metadata
+doc_metadata <- data.frame(
+  document = docnames(dfm_ungrouped),
+  date = as.Date(docvars(dfm_ungrouped, "date"), format = "%Y-%m-%d")
+)
+emotion_long <- left_join(emotion_long, doc_metadata, by = "document")
+
+# Filter to include only relevant emotions and sentiments
+emotion_long <- emotion_long %>%
+  filter(emotion %in% c("joy", "trust", "fear", "surprise", "anger", "anticipation", "disgust", "sadness", "positive", "negative"))
+
+# Normalize the sentiment and emotion scores for each document
+emotion_long <- emotion_long %>%
+  group_by(document) %>%
+  mutate(total_emotions = sum(sentiment_score[emotion %in% c("joy", "trust", "fear", "surprise", "anger", "anticipation", "disgust", "sadness")]),
+         total_sentiments = sum(sentiment_score[emotion %in% c("positive", "negative")]),
+         normalized_score = if_else(emotion %in% c("positive", "negative"), sentiment_score / total_sentiments, sentiment_score / total_emotions)) %>%
+  ungroup()
+
+# Separate emotions and sentiments
+emotion_long <- emotion_long %>%
+  filter(!is.na(normalized_score))
+
+emotion_data <- emotion_long %>%
+  filter(emotion %in% c("joy", "trust", "fear", "surprise", "anger", "anticipation", "disgust", "sadness"))
+
+sentiment_data <- emotion_long %>%
+  filter(emotion %in% c("positive", "negative"))
+
+# Plotting emotions over time
+plot_emotions <- ggplot(emotion_data, aes(x = date, y = normalized_score, color = emotion)) +
+  geom_line() +
+  labs(title = "Normalized Emotions Over Time", x = "Date", y = "Normalized Score") +
+  scale_color_brewer(palette = "Set3") +
+  theme_minimal() +
+  theme(legend.position = "bottom", legend.title = element_blank()) +
+  scale_x_date(date_labels = "%b %Y", date_breaks = "1 month")
+
+# Plotting sentiments over time
+plot_sentiments <- ggplot(sentiment_data, aes(x = date, y = normalized_score, color = emotion)) +
+  geom_line() +
+  labs(title = "Normalized Sentiments Over Time", x = "Date", y = "Normalized Score") +
+  scale_color_brewer(palette = "Set1") +
+  theme_minimal() +
+  theme(legend.position = "bottom", legend.title = element_blank()) +
+  scale_x_date(date_labels = "%b %Y", date_breaks = "1 month")
+
+# Combine the plots using patchwork
+combined_plot <- plot_emotions + plot_sentiments + plot_layout(ncol = 1)
+
+# Print the combined plot
+print(combined_plot)
 ```
 
 Incorporate the word embeddings in the sentiment analysis.
@@ -443,14 +505,16 @@ p1 <- ggplot(sentiments, aes(x = date, y = normalized_score, color = category)) 
   geom_line() +
   labs(title = "Normalized Daily Sentiment Scores", y = "Normalized Score", x = "Date") +
   theme_minimal() +
-  theme(legend.position = "bottom", legend.title = element_blank())
+  theme(legend.position = "bottom", legend.title = element_blank()) +
+  scale_x_date(date_labels = "%b %Y", date_breaks = "1 month")
 
 # Plotting emotions
 p2 <- ggplot(emotions, aes(x = date, y = normalized_score, color = category)) +
   geom_line() +
   labs(title = "Normalized Daily Emotion Scores", y = "Normalized Score", x = "Date") +
   theme_minimal() +
-  theme(legend.position = "bottom", legend.title = element_blank())
+  theme(legend.position = "bottom", legend.title = element_blank()) +
+  scale_x_date(date_labels = "%b %Y", date_breaks = "1 month")
 
 # Combine the plots
 combined_plot <- p1 / p2 + plot_layout(ncol = 1)
@@ -488,3 +552,4 @@ ggplot(visualization_data, aes(x = date)) +
   theme_minimal()
 
 ```
+
