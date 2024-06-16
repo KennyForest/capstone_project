@@ -1,1 +1,1 @@
-This is the data repository for my ASDS capstone project.
+This is github repository for the code and datasets of my MY498 capstone project.

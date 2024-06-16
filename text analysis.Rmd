@@ -25,6 +25,10 @@ library(data.table)
 library(word2vec)
 library(textTinyR)
 library(reshape2)
+library(scales)
+library(grid)
+library(gridExtra)
+library(magick)
 ```
 
 ## Data Loading and Preprocessing
@@ -49,6 +53,11 @@ disclaimer_pattern <- disclaimer_pattern <- "Disclaimer.*?All rights reserved|Sh
 # Use str_remove_all to remove patterns from each text
 cleaned_texts <- str_remove_all(texts, disclaimer_pattern)
 
+# Remove the rows with empty texts
+non_empty <- cleaned_texts != ""
+cleaned_texts <- cleaned_texts[non_empty]
+articles <- articles[non_empty, ]
+
 # Create corpus from cleaned texts, set 4 docvariables associated with each document
 corp <- corpus(cleaned_texts,
                docvars = data.frame(organisation = articles$Organisation,
@@ -72,12 +81,17 @@ ndoc(dfm) # total number of documents
 sum(dfm) # total number of tokens
 nfeat(dfm) # total number of types/features
 
+# Save the plot
+png("Wordcloud.png", width = 16, height = 10, units = "in", res = 300)
+
 # plot the wordcloud
 textplot_wordcloud(dfm, min_count = 10, max_words = 150, rotation = 0)
 
+dev.off()
+
 # calculate tf-idf scores for each feature
 dfm_tfidf <- dfm_tfidf(dfm)
-# print the top 10 words for each candidate
+# print the top 10 words with the highest tf-idf scores
 top_features <- topfeatures(dfm_tfidf, 10)
 
 top_features_table <- data.frame(term = names(top_features), tfidf = top_features, row.names = NULL)
@@ -87,7 +101,7 @@ print(top_features_table)
 
 ```
 ## Structural Topic Modelling
-Based on the diagnostic plots, selecting k = 15 appears optimal, as it captures a balance between maximising Held-Out Likelihood and maintaining acceptable Semantic Coherence. At this point, the likelihood indicates an efficient model fit without overfitting, evidenced by a notable peak in likelihood and acceptable coherence levels. Additionally, k = 15 shows diminishing returns in model improvement beyond this point, as evidenced by the steep decline in Semantic Coherence and minimal gains in the Lower Bound for higher values of KKK. This choice ensures a robust model that interprets distinct topics with substantial coherence and relevance.
+Based on the diagnostic plots, selecting K = 15 appears optimal, as it captures a balance between maximising Held-Out Likelihood and maintaining acceptable Semantic Coherence. At this point, the likelihood indicates an efficient model fit without overfitting, evidenced by a notable peak in likelihood and acceptable coherence levels. Additionally, K = 15 shows diminishing returns in model improvement beyond this point, as evidenced by the steep decline in Semantic Coherence and minimal gains in the Lower Bound for higher values of K. This choice ensures a robust model that interprets distinct topics with substantial coherence and relevance.
 ```{r}
 # Convert the quanteda object into a stm input
 stm_input <- convert(dfm, to = "stm")
@@ -113,7 +127,7 @@ cloud(stmodel, topic = 3, scale = c(2, .25)) # Legal Support for Asylum Seekers
 cloud(stmodel, topic = 4, scale = c(2, .25)) # Migrant Justice and Human Rights
 cloud(stmodel, topic = 5, scale = c(2, .25)) # Migrant Experiences and Integration Challenges
 cloud(stmodel, topic = 6, scale = c(2, .25)) # Asylum Support Networks and Social Services
-cloud(stmodel, topic = 7, scale = c(2, .25)) # Children Trafficking in Asylum Seeking
+cloud(stmodel, topic = 7, scale = c(2, .25)) # Child Trafficking in Asylum Seeking
 cloud(stmodel, topic = 8, scale = c(2, .25)) # Refugee Week and Fundraising Campaigns
 cloud(stmodel, topic = 9, scale = c(2, .25)) # Decolonial Dialogues and Cognitive Justice 
 cloud(stmodel, topic = 10, scale = c(2, .25)) # LGBTQI+ Experiences in Asylum Seeking
@@ -125,12 +139,12 @@ cloud(stmodel, topic = 15, scale = c(2, .25)) # Illegal Migration Bill
 ```
 
 ```{r}
-# Examine the documents containing a specific topic, for example topic 9
-topic_9 <- findThoughts(stmodel,
+# Examine the documents containing a specific topic, for example topic 1
+topic_1 <- findThoughts(stmodel,
                         texts = articles$Text[rowSums(dfm)>0],
-                        n = 2, topics = 9)$docs[[1]]
-plotQuote(topic_9, width = 300,
-          main = "Documents containing topic 9")
+                        n = 2, topics = 1)$docs[[1]]
+plotQuote(topic_1, width = 300,
+          main = "Documents containing topic 1")
 ```
 ### Topic Proportions
 ```{r}
@@ -155,7 +169,7 @@ average_probabilities <- average_probabilities %>%
 detailed_topic_descriptions <- paste("Topic", 1:15, ":",
   c("Migrants Diversity and Historical Acknowledgement", "Asylum Seekers' Integration in Scotland",
     "Legal Support for Asylum Seekers", "Migrant Justice and Human Rights", "Migrant Experiences and Integration Challenges",
-    "Asylum Support Networks and Social Services", "Children Trafficking in Asylum Seeking", "Refugee Week and Fundraising Campaigns",
+    "Asylum Support Networks and Social Services", "Child Trafficking in Asylum Seeking", "Refugee Week and Fundraising Campaigns",
     "Decolonial Dialogues and Cognitive Justice", "LGBTQI+ Experiences in Asylum Seeking", "Women Experiences in Asylum Seeking",
     "Asylum Accommodation and Essential Support", "Migrant Data and Legal Status", "Youth Support for Asylum Seekers and Refugees",
     "Illegal Migration Bill"))
@@ -176,32 +190,36 @@ pie_chart <- ggplot(average_probabilities, aes(x = "", y = AverageProb, fill = t
 # Display the plot
 print(pie_chart)
 
+ggsave("topic prevalence.png", pie_chart, dpi = 300, width = 12, height = 8, units = "in")
+
 ```
 ### Topic Prevalence by time
 ```{r}
 # Estimate the effect of day_of_year on topic prevalence
 effect_estimates <- estimateEffect(1:15 ~ s(day_of_year), stmodel, meta = stm_input$meta)
-# Define the plotting layout
-par(mfrow = c(3, 5), mar = c(4, 4, 2, 1))  # Adjust margins as needed
 
 # Detailed topic labels, include topic numbers for clarity
 topic_labels <- c(
-  "Migrants Diversity and Historical Acknowledgement",
-  "Asylum Seekers' Integration in Scotland",
-  "Legal Support for Asylum Seekers",
-  "Migrant Justice and Human Rights",
-  "Migrant Experiences and Integration Challenges",
-  "Asylum Support Networks and Social Services",
-  "Children Trafficking in Asylum Seeking",
-  "Refugee Week and Fundraising Campaigns",
-  "Decolonial Dialogues and Cognitive Justice",
-  "LGBTQI+ Experiences in Asylum Seeking",
-  "Women Experiences in Asylum Seeking",
-  "Asylum Accommodation and Essential Support",
-  "Migrant Data and Legal Status",
-  "Youth Support for Asylum Seekers and Refugees",
+  "Migrants Diversity and\nHistorical Acknowledgement",
+  "Asylum Seekers' Integration\nin Scotland",
+  "Legal Support for\nAsylum Seekers",
+  "Migrant Justice and\nHuman Rights",
+  "Migrant Experiences and\nIntegration Challenges",
+  "Asylum Support Networks\nand Social Services",
+  "Child Trafficking\nin Asylum Seeking",
+  "Refugee Week and\nFundraising Campaigns",
+  "Decolonial Dialogues\nand Cognitive Justice",
+  "LGBTQI+ Experiences\nin Asylum Seeking",
+  "Women Experiences\nin Asylum Seeking",
+  "Asylum Accommodation\nand Essential Support",
+  "Migrant Data and\nLegal Status",
+  "Youth Support for Asylum\nSeekers and Refugees",
   "Illegal Migration Bill"
 )
+# Save the plot
+png("Topic Prevalence across Time.png", width = 3000, height = 2000, res = 300)
+# Set up the layout for the plots
+par(mfrow = c(3, 5), mar = c(5, 4, 2, 1), cex.axis = 0.8, cex.main = 1)
 
 # Loop through topics to create sub-plots with correct axis labels
 for (i in 1:length(topic_labels)) {
@@ -214,6 +232,7 @@ for (i in 1:length(topic_labels)) {
   monthpositions <- as.numeric(monthseq - min(monthseq))
   axis(1, at = monthpositions, labels = months(monthseq), las = 2)  # las = 2 for vertical labels
 }
+dev.off()
 
 ```
 
@@ -532,36 +551,182 @@ p2 <- ggplot(emotions, aes(x = date, y = normalized_score, color = category)) +
 # Combine the plots
 combined_plot <- p1 / p2 + plot_layout(ncol = 1)
 print(combined_plot)
+
+# Save the combined plot to a file
+ggsave("combined_sentiment_emotion_plot.png", plot = combined_plot, width = 10, height = 8, dpi = 300)
 ```
-
+Match topics with sentiment and emotion scores, so to know the sentiment and emotion scores for each topic across time.
 ```{r}
-# Ensure dates are in the correct format
-daily_scores$date <- as.Date(daily_scores$date, format = "%d-%b-%y")
+# Extract the dominant topic for each document
+dominant_topic_per_doc <- doc_topic_long %>%
+  group_by(document) %>%
+  summarise(dominant_topic = topic[which.max(prob)], .groups = 'drop')
 
-# Ensure document counts are tied to the same date format and merged correctly
-doc_data <- data.frame(
-  date = as.Date(docvars(dfm, "date"), format = "%d-%b-%y"),
-  doc_id = docnames(dfm)
+# Add the prefix 'text' to the document identifiers in dominant_topic_per_doc for merging
+dominant_topic_per_doc$document <- paste("text", dominant_topic_per_doc$document, sep="")
+# Add the column 'document' to scores_df for merging
+scores_df$document <- rownames(scores_df)
+
+# Merge dominant topic per document with the sentiment scores
+document_sentiment_topic <- merge(scores_df, dominant_topic_per_doc, by = "document")
+
+# Aggregate sentiment scores by topic and date
+topic_date_sentiments <- document_sentiment_topic %>%
+  group_by(date, dominant_topic) %>%
+  summarise_at(vars(positive, negative, joy, sadness, anger, fear, surprise, disgust, trust, anticipation), mean, .groups = 'drop')
+
+# Custom topic labels mapping from V1 to V15
+topic_labels <- c(
+  "V1" = "Migrants Diversity and\nHistorical Acknowledgement",
+  "V2" = "Asylum Seekers' Integration in Scotland",
+  "V3" = "Legal Support for Asylum Seekers",
+  "V4" = "Migrant Justice and Human Rights",
+  "V5" = "Migrant Experiences and\nIntegration Challenges",
+  "V6" = "Asylum Support Networks\nand Social Services",
+  "V7" = "Child Trafficking in Asylum Seeking",
+  "V8" = "Refugee Week and Fundraising Campaigns",
+  "V9" = "Decolonial Dialogues and Cognitive Justice",
+  "V10" = "LGBTQI+ Experiences in Asylum Seeking",
+  "V11" = "Women Experiences in Asylum Seeking",
+  "V12" = "Asylum Accommodation\nand Essential Support",
+  "V13" = "Migrant Data and Legal Status",
+  "V14" = "Youth Support for Asylum\nSeekers and Refugees",
+  "V15" = "Illegal Migration Bill"
 )
 
-doc_count_per_day <- doc_data %>%
-  group_by(date) %>%
-  summarise(doc_count = n(), .groups = 'drop')
+# Split the data into two subsets: one for sentiments and one for emotions for clearer plotting
+sentiments_data <- topic_date_sentiments %>%
+  select(date, dominant_topic, positive, negative)
 
-# Merge with the normalized daily scores
-visualization_data <- left_join(doc_count_per_day, normalized_daily_scores, by = "date")
+emotions_data <- topic_date_sentiments %>%
+  select(date, dominant_topic, joy, sadness, anger, fear, surprise, disgust, trust, anticipation)
 
-# Ensure the merge was successful and check the structure
-print(head(visualization_data))
+# Sentiment Plot
+sentiment_plot <- ggplot(data = sentiments_data, aes(x = date)) + 
+  geom_line(aes(y = positive, color = "Positive")) +
+  geom_line(aes(y = negative, color = "Negative")) +
+  facet_wrap(~ dominant_topic, labeller = labeller(dominant_topic = topic_labels), scales = "free_y") +
+  scale_x_date(date_labels = "%b %Y", date_breaks = "2 months") +  # x axis is divided by every two months
+  labs(title = "Sentiment Scores Over Time by Topic", y = "Sentiment Score", x = "Date") +
+  scale_color_manual(values = c("Positive" = "#00AFBB", "Negative" = "#FC4E07")) +
+  theme_minimal() +
+  theme(legend.position = "bottom", legend.title = element_blank(),
+        axis.text.x = element_text(angle = 45, hjust = 1))  # Slight rotation for better readability
 
-# Plotting
-ggplot(visualization_data, aes(x = date)) +
-  geom_line(aes(y = doc_count, group = 1), color = "blue", linewidth = 1) +
-  geom_line(aes(y = normalized_score * max(doc_count, na.rm = TRUE), color = category), linewidth = 1) +
-  labs(title = "Document Count and Normalized Sentiment Scores by Date",
-       x = "Date", y = "Document Count / Scaled Sentiment Score") +
-  scale_color_brewer(palette = "Set1") +
-  theme_minimal()
+# Emotion Plot
+emotion_plot <- ggplot(data = emotions_data, aes(x = date)) + 
+  geom_line(aes(y = joy, color = "Joy")) +
+  geom_line(aes(y = sadness, color = "Sadness")) +
+  geom_line(aes(y = anger, color = "Anger")) +
+  geom_line(aes(y = fear, color = "Fear")) +
+  geom_line(aes(y = surprise, color = "Surprise")) +
+  geom_line(aes(y = disgust, color = "Disgust")) +
+  geom_line(aes(y = trust, color = "Trust")) +
+  geom_line(aes(y = anticipation, color = "Anticipation")) +
+  facet_wrap(~ dominant_topic, labeller = labeller(dominant_topic = topic_labels), scales = "free_y") +
+  scale_x_date(date_labels = "%b %Y", date_breaks = "2 months") +  # x axis is divided by every two months
+  labs(title = "Emotion Scores Over Time by Topic", y = "Emotion Score", x = "Date") +
+  scale_color_manual(values = c("Joy" = "#00AFBB", "Sadness" = "#006994", "Anger" = "#FC4E07", "Fear" = "#008000", 
+                                "Surprise" = "#9467BD", "Disgust" = "#9ACD32", "Trust" = "#E377C2", "Anticipation" = "#E7B800")) +
+  theme_minimal() +
+  theme(legend.position = "bottom", legend.title = element_blank(),
+        axis.text.x = element_text(angle = 45, hjust = 1))  # Slight rotation for better readability
 
+# Print the plots
+print(sentiment_plot)
+print(emotion_plot)
+
+# Save the plots
+ggsave("sentiment_scores_by_topic.png", plot = sentiment_plot, width = 12, height = 8, dpi = 300)
+ggsave("emotion_scores_by_topic.png", plot = emotion_plot, width = 12, height = 8, dpi = 300)
 ```
 
+Migrant events timeline to match the structural topic model and sentiment scores:
+```{r}
+# Load and prepare data
+events <- read.csv("migrant events timeline.csv", stringsAsFactors = FALSE)
+events$Date <- as.Date(events$Date, format = "%d/%m/%Y")
+
+# Function to add line breaks to event text
+split_text <- function(text, width) {
+  str_wrap(text, width = width)
+}
+
+# Apply text splitting function to events
+events <- events %>%
+  mutate(
+    Event = sapply(Event, split_text, width = 30)  # Adjust width as necessary
+  )
+
+# Assign initial staggered positions based on each event's order within its month to avoid overlap
+events <- events %>%
+  arrange(Date) %>%
+  group_by(Month = format(Date, "%Y-%m")) %>%
+  mutate(
+    Position = 1.0 * (row_number() - 0.5) * ifelse(row_number() %% 2 == 0, 1, -1),  # Initial staggered positions
+    Vjust = ifelse(Position > 0, -0.5, 1.5)  # Calculate vjust based on Position
+  ) %>%
+  ungroup()
+
+# Function to check for overlaps and adjust positions
+adjust_positions <- function(df) {
+  max_iter <- 10  # Maximum number of iterations to prevent infinite loops
+  for (i in 2:nrow(df)) {
+    iter_count <- 0
+    repeat {
+      overlap_found <- FALSE
+      for (j in 1:(i - 1)) {
+        if (abs(df$Position[i] - df$Position[j]) < 1 && abs(difftime(df$Date[i], df$Date[j], units = "days")) < 15) {
+          df$Position[i] <- df$Position[i] + ifelse(df$Position[i] > 0, 1, -1) * 0.5
+          overlap_found <- TRUE
+        }
+      }
+      if (!overlap_found || iter_count >= max_iter) {
+        break
+      }
+      iter_count <- iter_count + 1
+    }
+  }
+  return(df)
+}
+
+events <- adjust_positions(events)
+
+# Create the timeline plot
+timeline_plot <- ggplot(events, aes(x = Date)) +
+  geom_hline(yintercept = 0, color = "black", size = 1.5) +  # Horizontal base line
+  geom_segment(aes(y = 0, xend = Date, yend = Position), color = "black", size = 0.5) +  # Vertical indicator lines
+  geom_text(aes(y = Position, label = Event, vjust = Vjust), hjust = 0.5, size = 3.3, color = "black") +
+  scale_x_date(date_labels = "%b %Y", date_breaks = "1 month") +  # Month labels directly on the timeline
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1),  # Adjusted angle of month labels to prevent overlap
+    axis.ticks.x = element_blank(),
+    axis.line.x = element_line(color = "black", size = 0.5),
+    axis.text.y = element_blank(),
+    axis.ticks.y = element_blank(),
+    axis.title.x = element_blank(),
+    axis.title.y = element_blank(),
+    panel.grid.major.x = element_blank(),
+    panel.grid.minor.x = element_blank(),
+    panel.grid.major.y = element_blank(),
+    panel.background = element_rect(fill = "white"),
+    plot.margin = margin(t = 10, r = 10, b = 10, l = 10, unit = "pt")  # Reduced bottom margin
+  ) +
+  labs(x = "", y = "", title = "Timeline of UK Immigration Events")
+
+# Display the plot
+print(timeline_plot)
+
+# Save the plot as an image
+ggsave("Timeline_Plot.png", plot = timeline_plot, width = 22, height = 16, dpi = 320)
+
+# Read the image and rotate it
+image <- image_read("Timeline_Plot.png")
+rotated_image <- image_rotate(image, 270)
+
+# Save the rotated image as a PDF
+pdf("Timeline_Plot_A4_Rotated.pdf", width = 8.27, height = 11.69)
+grid::grid.raster(rotated_image)
+dev.off()
+```
